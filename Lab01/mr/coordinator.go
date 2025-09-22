@@ -6,10 +6,29 @@ import "os"
 import "net/rpc"
 import "net/http"
 
+// Additional imports
+import "time"
 
 type Coordinator struct {
 	// Your definitions here.
+	Workers []WorkerData
 
+}
+
+type WorkerData struct {
+	WorkerId string
+
+	// "idle", "busy", "crashed"
+	Status string
+
+	// "map", "reduce"
+	JobType string
+
+	// Time when the worker started its current task, -1 if idle
+	JobStartTime int
+
+	// Time since last heartbeat received
+	LastHeartbeat int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -24,6 +43,25 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+func (c *Coordinator) RegisterWorker(workerId string, reply *GenericReply) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	// Add worker to list of workers
+	worker := WorkerData{}
+	worker.WorkerId = workerId
+	worker.Status = "idle"
+	worker.JobStartTime = -1
+	worker.LastHeartbeat = time.Now().Unix()
+	c.Workers = append(c.Workers, worker)
+
+	reply.Success = true
+	return nil;
+}
+
+func (c *Coordinator) HeartbeatMonitor(workerID string) {
+	return nil;
+}
 
 //
 // start a thread that listens for RPCs from worker.go

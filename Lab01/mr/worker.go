@@ -5,6 +5,8 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
+// Additional imports
+import "time"
 
 //
 // Map functions return a slice of KeyValue.
@@ -36,6 +38,21 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	CallRegister()
+
+}
+
+func CallRegister() {
+	workerId := time.Now().UnixNano()
+
+	reply := GenericReply{}
+
+	ok := call("Coordinator.RegisterWorker", workerId, &reply)
+	if ok {
+
+	} else {
+		fmt.Printf("call failed!\n")
+	}
 }
 
 //
