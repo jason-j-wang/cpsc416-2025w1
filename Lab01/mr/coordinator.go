@@ -11,24 +11,28 @@ import "time"
 
 type Coordinator struct {
 	// Your definitions here.
-	Workers []WorkerData
-
+	workers map[string]WorkerData
+	mapJobs []Job
 }
 
 type WorkerData struct {
-	WorkerId string
-
 	// "idle", "busy", "crashed"
-	Status string
+	status string
 
 	// "map", "reduce"
-	JobType string
+	curJobType string
+
+	curJobId string
 
 	// Time when the worker started its current task, -1 if idle
-	JobStartTime int
+	curJobStartTime int
 
 	// Time since last heartbeat received
-	LastHeartbeat int
+	lastHeartbeat int
+}
+
+type Job struct {
+	jobId string
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -43,23 +47,58 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) RegisterWorker(workerId string, reply *GenericReply) {
+func (c *Coordinator) RegisterWorkerRPC(workerId string, reply *GenericReply) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
 	// Add worker to list of workers
 	worker := WorkerData{}
-	worker.WorkerId = workerId
-	worker.Status = "idle"
-	worker.JobStartTime = -1
-	worker.LastHeartbeat = time.Now().Unix()
-	c.Workers = append(c.Workers, worker)
+	worker.status = "idle"
+	worker.curJobStartTime = -1
+	worker.lastHeartbeat = time.Now().Unix()
+	c.workers[workerId] = worker
 
 	reply.Success = true
 	return nil;
 }
 
-func (c *Coordinator) HeartbeatMonitor(workerID string) {
+func (c *Coordinator) HeartbeatRPC(workerID string, reply *GenericReply) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.workers[workerID].lastHeartbeat = time.Now().Unix()
+
+	reply.Success = true
+	return nil;
+}
+
+// Assign a task to worker if one is available
+func (c *Coordinator) Task(workerID string, reply *TaskReply) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// TODO
+	return nil;
+}
+
+// Checks every second if any workers have crashed
+func (c *Coordinator) heartbeatMonitor() {
+	for {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		for workerId, workerData := range c.workers {
+			if time.Now().Unix() - workerData.lastHeartbeat > 10 {
+				// Worker has crashed
+				c.workers[workerId].status = "crashed"
+				if workerData.curJobId != "" {
+					// TODO: Reassign job
+				}
+			}
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+	
 	return nil;
 }
 
@@ -77,6 +116,10 @@ func (c *Coordinator) server() {
 		log.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
+}
+
+func (c *Coordinator) initMapTasks(files []string, nReduce int) {
+	// TODO
 }
 
 //
@@ -101,7 +144,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-
+	go c.heartbeatMonitor()
 
 	c.server()
 	return &c

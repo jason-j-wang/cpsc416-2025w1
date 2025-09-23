@@ -28,6 +28,11 @@ type GenericReply struct {
 	Success bool
 }
 
+type TaskReply struct {
+	JobId string
+	NReduce int
+	//probs more
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

@@ -38,16 +38,33 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
-	CallRegister()
+	workerId := time.Now().UnixNano()
+	CallRegister(workerId)
+
+	go CallHeartbeat(workerId)
 
 }
 
-func CallRegister() {
-	workerId := time.Now().UnixNano()
+// Ping the coordinator every second
+func CallHeartbeat(workerId string) {
+	for {
+		reply := GenericReply{}
 
+		ok := call("Coordinator.HeartbeatRPC", workerId, &reply)
+		if ok {
+
+		} else {
+			fmt.Printf("call failed!\n")
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func CallRegister(workerId string) {
 	reply := GenericReply{}
 
-	ok := call("Coordinator.RegisterWorker", workerId, &reply)
+	ok := call("Coordinator.RegisterWorkerRPC", workerId, &reply)
 	if ok {
 
 	} else {
