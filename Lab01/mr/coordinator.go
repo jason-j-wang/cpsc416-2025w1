@@ -9,23 +9,31 @@ import "net/http"
 // Additional imports
 import "time"
 import "sync"
-import "fmt"
+//import "fmt"
 
 type Coordinator struct {
 	// Your definitions here.
+	nReduce int
+
 	workers map[int64]WorkerData
 	mapJobs []Job
+	reduceJobs []Job
 	mu sync.Mutex
+
+	// "map", "reduce", "done"
+	phase string
 }
 
 type WorkerData struct {
 	// "idle", "busy", "crashed"
+	// status might not be needed
 	status string
 
 	// "map", "reduce"
 	curJobType string
 
-	curJobId string
+	// -1 if no job
+	curJobId int
 
 	// Time when the worker started its current task, -1 if idle
 	curJobStartTime int64
@@ -35,7 +43,18 @@ type WorkerData struct {
 }
 
 type Job struct {
-	jobId string
+	// jobId should be index in mapJobs or reduceJobs
+	// If this is no longer the case then add it here
+	//jobId int
+
+	file string
+
+	// Time when worker started this job
+	// If multiple workers on the same job, time should be the mot recent start time
+	jobStartTime int64
+
+	// "incomplete", "in progress", "complete"
+	status string
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -62,7 +81,7 @@ func (c *Coordinator) RegisterWorkerRPC(workerId int64, reply *GenericReply) err
 	c.workers[workerId] = worker
 
 	reply.Success = true
-	return nil;
+	return nil
 }
 
 func (c *Coordinator) HeartbeatRPC(workerID int64, reply *GenericReply) error {
@@ -74,33 +93,86 @@ func (c *Coordinator) HeartbeatRPC(workerID int64, reply *GenericReply) error {
 	c.workers[workerID] = newWorkerData
 
 	reply.Success = true
-	return nil;
+	return nil
 }
 
 // Assign a task to worker if one is available
+// Iterate through the jobs array and assigns the first one that is either:
+// - status is "incomplete"
+// - status is "in progress" and jobStartTime is more than 10 seconds ago
+
+// side note: if we stick to this assigning logic, idk what use the worker status would be used for.
+// not even sure if what the heartbeat monitor is used for either, but it's there anyways
 func (c *Coordinator) Task(workerID int64, reply *TaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// TODO
-	return nil;
+	
+	if c.phase == "map" {
+		for id, jobData:= range c.mapJobs {
+			if jobData.status == "incomplete"  || (jobData.status == "in progress" && time.Now().Unix() - jobData.jobStartTime > 10) {
+				reply.JobId = id
+				reply.File = jobData.file
+				reply.NReduce = c.nReduce
+
+				newJobData := jobData
+				newJobData.status = "in progress"
+				newJobData.jobStartTime = time.Now().Unix()
+				c.mapJobs[id] = newJobData
+
+				return nil
+			} 
+		}
+
+		// No available tasks
+		reply.JobId = -1
+
+	} else {
+		// TODO assign reduce task
+	}
+
+	return nil
 }
+
+
 
 // Checks every second if any workers have crashed
 func (c *Coordinator) heartbeatMonitor() {
 	for {
 		c.mu.Lock()
-		defer c.mu.Unlock()
-
+		
 		for workerId, workerData := range c.workers {
 			newWorkerData := workerData
 			if time.Now().Unix() - workerData.lastHeartbeat > 10 {
 				// Worker has crashed
 				newWorkerData.status = "crashed"
-				if workerData.curJobId != "" {
-					// TODO: Reassign job
-				}
+				
 			}
 			c.workers[workerId] = newWorkerData
+		}
+
+		c.mu.Unlock()
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// Checks every second if all map tasks are complete
+func (c *Coordinator) mapTasksMonitor() {
+	for {
+		c.mu.Lock()
+
+		done := true
+		for _, jobData:= range c.mapJobs {
+			if jobData.status != "complete" {
+				done = false
+				break
+			} 
+		}
+
+		c.mu.Unlock()
+		
+		if done {
+			c.phase = "reduce"
+			return
 		}
 
 		time.Sleep(1 * time.Second)
@@ -123,8 +195,17 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-func (c *Coordinator) initMapTasks(files []string, nReduce int) {
-	// TODO
+func (c *Coordinator) initMapTasks(files []string) {
+	// Add each file as a job inside Coordinator
+	for _, file := range files {
+        //fmt.Println(file)
+
+		job := Job{}
+		job.file = file
+		job.status = "incomplete"
+
+		c.mapJobs = append(c.mapJobs, job)
+    }
 }
 
 //
@@ -132,12 +213,9 @@ func (c *Coordinator) initMapTasks(files []string, nReduce int) {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
-
 	// Your code here.
 
-
-	return ret
+	return c.phase == "done"
 }
 
 //
@@ -147,15 +225,16 @@ func (c *Coordinator) Done() bool {
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
+	c.nReduce = nReduce
+	c.phase = "map"
 
 	// Your code here.
+	c.initMapTasks(files)
+
+	// Monitors
 	go c.heartbeatMonitor()
+	go c.mapTasksMonitor()
 
-	c.server()
-
-	// for _, file := range files {
-    //     fmt.Println(file)
-    // }
-		
+	c.server()	
 	return &c
 }

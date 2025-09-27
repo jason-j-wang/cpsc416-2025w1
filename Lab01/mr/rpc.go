@@ -29,7 +29,8 @@ type GenericReply struct {
 }
 
 type TaskReply struct {
-	JobId string
+	JobId int
+	File string
 	NReduce int
 	//probs more
 }
