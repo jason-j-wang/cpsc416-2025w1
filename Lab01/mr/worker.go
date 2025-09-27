@@ -46,7 +46,7 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 // Ping the coordinator every second
-func CallHeartbeat(workerId string) {
+func CallHeartbeat(workerId int64) {
 	for {
 		reply := GenericReply{}
 
@@ -61,7 +61,7 @@ func CallHeartbeat(workerId string) {
 	}
 }
 
-func CallRegister(workerId string) {
+func CallRegister(workerId int64) {
 	reply := GenericReply{}
 
 	ok := call("Coordinator.RegisterWorkerRPC", workerId, &reply)

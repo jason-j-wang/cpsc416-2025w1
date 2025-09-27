@@ -8,11 +8,14 @@ import "net/http"
 
 // Additional imports
 import "time"
+import "sync"
+import "fmt"
 
 type Coordinator struct {
 	// Your definitions here.
-	workers map[string]WorkerData
+	workers map[int64]WorkerData
 	mapJobs []Job
+	mu sync.Mutex
 }
 
 type WorkerData struct {
@@ -25,10 +28,10 @@ type WorkerData struct {
 	curJobId string
 
 	// Time when the worker started its current task, -1 if idle
-	curJobStartTime int
+	curJobStartTime int64
 
 	// Time since last heartbeat received
-	lastHeartbeat int
+	lastHeartbeat int64
 }
 
 type Job struct {
@@ -47,7 +50,7 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) RegisterWorkerRPC(workerId string, reply *GenericReply) {
+func (c *Coordinator) RegisterWorkerRPC(workerId int64, reply *GenericReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
@@ -62,18 +65,20 @@ func (c *Coordinator) RegisterWorkerRPC(workerId string, reply *GenericReply) {
 	return nil;
 }
 
-func (c *Coordinator) HeartbeatRPC(workerID string, reply *GenericReply) {
+func (c *Coordinator) HeartbeatRPC(workerID int64, reply *GenericReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.workers[workerID].lastHeartbeat = time.Now().Unix()
+	newWorkerData := c.workers[workerID]
+	newWorkerData.lastHeartbeat = time.Now().Unix()
+	c.workers[workerID] = newWorkerData
 
 	reply.Success = true
 	return nil;
 }
 
 // Assign a task to worker if one is available
-func (c *Coordinator) Task(workerID string, reply *TaskReply) {
+func (c *Coordinator) Task(workerID int64, reply *TaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// TODO
@@ -87,19 +92,19 @@ func (c *Coordinator) heartbeatMonitor() {
 		defer c.mu.Unlock()
 
 		for workerId, workerData := range c.workers {
+			newWorkerData := workerData
 			if time.Now().Unix() - workerData.lastHeartbeat > 10 {
 				// Worker has crashed
-				c.workers[workerId].status = "crashed"
+				newWorkerData.status = "crashed"
 				if workerData.curJobId != "" {
 					// TODO: Reassign job
 				}
 			}
+			c.workers[workerId] = newWorkerData
 		}
 
 		time.Sleep(1 * time.Second)
 	}
-	
-	return nil;
 }
 
 //
@@ -147,5 +152,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	go c.heartbeatMonitor()
 
 	c.server()
+
+	// for _, file := range files {
+    //     fmt.Println(file)
+    // }
+		
 	return &c
 }
