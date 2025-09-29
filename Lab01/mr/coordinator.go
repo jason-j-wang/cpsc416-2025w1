@@ -10,12 +10,7 @@ import (
 	"time"
 )
 
-// Additional imports
-
-//import "fmt"
-
 type Coordinator struct {
-	// Your definitions here.
 	nReduce int
 
 	workers    map[int64]WorkerData
@@ -36,7 +31,7 @@ type WorkerData struct {
 	curJobType string
 
 	// -1 if no job
-	curJobId int
+	curJobId int64
 
 	// Time when the worker started its current task, -1 if idle
 	curJobStartTime int64
@@ -76,6 +71,8 @@ func (c *Coordinator) RegisterWorkerRPC(args *WorkerArgs, reply *GenericReply) e
 
 	// Add worker to list of workers
 	worker := WorkerData{}
+	worker.curJobId = args.WorkerId
+	worker.curJobType = args.JobType
 	worker.status = "idle"
 	worker.curJobStartTime = -1
 	worker.lastHeartbeat = time.Now().Unix()
@@ -181,13 +178,13 @@ func (c *Coordinator) mapTasksMonitor() {
 			}
 		}
 
-		c.mu.Unlock()
-
 		if done {
-			c.phase = "reduce"
+			c.phase = "done" // TODO: switch this to "reduce" when reduce is implemented (it is "done" right now so the code exits)
+			c.mu.Unlock()
 			return
 		}
 
+		c.mu.Unlock()
 		time.Sleep(1 * time.Second)
 	}
 }
@@ -209,12 +206,9 @@ func (c *Coordinator) server() {
 func (c *Coordinator) initMapTasks(files []string) {
 	// Add each file as a job inside Coordinator
 	for _, file := range files {
-		//fmt.Println(file)
-
 		job := Job{}
 		job.file = file
 		job.status = "incomplete"
-
 		c.mapJobs = append(c.mapJobs, job)
 	}
 }

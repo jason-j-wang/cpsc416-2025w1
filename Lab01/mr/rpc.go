@@ -28,6 +28,7 @@ type ExampleReply struct {
 
 type WorkerArgs struct {
 	WorkerId int64
+	JobType  string
 }
 
 type GenericReply struct {

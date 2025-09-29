@@ -56,9 +56,10 @@ func Worker(mapf func(string, string) []KeyValue,
 		call("Coordinator.WorkerCompletion", &compArgs, &compReply)
 		time.Sleep(time.Second)
 
-		// 3. If map task, execute map function
-		// 4. If reduce task, execute reduce function
-		// 5. report completion to coodinator in RPC call
+		// TODO
+		// 1. If map task, execute map function
+		// 2. If reduce task, execute reduce function
+		// 3. report completion to coodinator in RPC call
 	}
 
 }
