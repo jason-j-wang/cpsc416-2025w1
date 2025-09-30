@@ -36,10 +36,11 @@ type GenericReply struct {
 }
 
 type TaskReply struct {
-	JobId   int
-	File    string
-	NReduce int
-	//probs more
+	JobId     int
+	File      string
+	NReduce   int
+	JobType   string
+	NMapTasks int  
 }
 
 type CompletionArgs struct {
