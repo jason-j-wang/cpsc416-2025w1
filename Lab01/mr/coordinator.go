@@ -111,6 +111,8 @@ func (c *Coordinator) Task(args *WorkerArgs, reply *TaskReply) error {
 				reply.JobId = id
 				reply.File = jobData.file
 				reply.NReduce = c.nReduce
+				reply.JobType = "map"
+				reply.NMapTasks = len(c.mapJobs)
 
 				newJobData := jobData
 				newJobData.status = "in progress"
@@ -121,11 +123,29 @@ func (c *Coordinator) Task(args *WorkerArgs, reply *TaskReply) error {
 			}
 		}
 
-		// No available tasks
+		// No available map tasks
 		reply.JobId = -1
 
-	} else {
-		// TODO assign reduce task
+	} else if c.phase == "reduce" {
+		for id, jobData := range c.reduceJobs {
+			if jobData.status == "incomplete" || (jobData.status == "in progress" && time.Now().Unix()-jobData.jobStartTime > 10) {
+				reply.JobId = id
+				reply.File = ""
+				reply.NReduce = c.nReduce
+				reply.JobType = "reduce"
+				reply.NMapTasks = len(c.mapJobs)
+
+				newJobData := jobData
+				newJobData.status = "in progress"
+				newJobData.jobStartTime = time.Now().Unix()
+				c.reduceJobs[id] = newJobData
+
+				return nil
+			}
+		}
+
+		// No available reduce tasks
+		reply.JobId = -1
 	}
 
 	return nil
@@ -179,8 +199,10 @@ func (c *Coordinator) mapTasksMonitor() {
 		}
 
 		if done {
-			c.phase = "done" // TODO: switch this to "reduce" when reduce is implemented (it is "done" right now so the code exits)
+			c.phase = "reduce"
+			c.initReduceTasks()
 			c.mu.Unlock()
+			go c.reduceTasksMonitor()
 			return
 		}
 
@@ -213,11 +235,44 @@ func (c *Coordinator) initMapTasks(files []string) {
 	}
 }
 
+func (c *Coordinator) initReduceTasks() {
+	for i := 0; i < c.nReduce; i++ {
+		job := Job{}
+		job.file = ""
+		job.status = "incomplete"
+		c.reduceJobs = append(c.reduceJobs, job)
+	}
+}
+
+
+func (c *Coordinator) reduceTasksMonitor() {
+	for {
+		c.mu.Lock()
+
+		done := true
+		for _, jobData := range c.reduceJobs {
+			if jobData.status != "complete" {
+				done = false
+				break
+			}
+		}
+
+		if done {
+			c.phase = "done"
+			c.mu.Unlock()
+			return
+		}
+
+		c.mu.Unlock()
+		time.Sleep(1 * time.Second)
+	}
+}
+
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	// Your code here.
-
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.phase == "done"
 }
 
