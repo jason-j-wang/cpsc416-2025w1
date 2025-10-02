@@ -72,12 +72,12 @@ func executeMapTask(jobId int, filename string, nReduce int, mapf func(string, s
 	// Same file reading as sequential version
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Printf("MAP OPEN FILE FAILED");
+		//log.Printf("MAP OPEN FILE FAILED");
 		return false
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Printf("MAP READ FILE FAILED");
+		//log.Printf("MAP READ FILE FAILED");
 		file.Close()
 		return false
 	}
@@ -95,7 +95,7 @@ func executeMapTask(jobId int, filename string, nReduce int, mapf func(string, s
 	for reduceTask := 0; reduceTask < nReduce; reduceTask++ {
 		tmpfile, err := os.CreateTemp("", "TEMP-MR-FILE")
 		if err != nil {
-			log.Printf("MAP TEMP FILE CREATION FAILED")
+			//log.Printf("MAP TEMP FILE CREATION FAILED")
 			for i := 0; i < reduceTask; i++ {
 				intermediateFiles[i].Close()
 			}
@@ -114,7 +114,7 @@ func executeMapTask(jobId int, filename string, nReduce int, mapf func(string, s
 		// We write the kv pair to the file using the JSON encoder
 		err := encoders[reduceTask].Encode(&kv)
 		if err != nil {
-			log.Printf("MAP TASK FAILED TO WRITE INTERMEDIATE FILE")
+			//log.Printf("MAP TASK FAILED TO WRITE INTERMEDIATE FILE")
 			for i := 0; i < nReduce; i++ {
 				intermediateFiles[i].Close()
 			}
@@ -128,7 +128,7 @@ func executeMapTask(jobId int, filename string, nReduce int, mapf func(string, s
 		mapOutputFileName := fmt.Sprintf("mr-%d-%d", jobId, reduceTask)
 		err := os.Rename(intermediateFiles[reduceTask].Name(), mapOutputFileName)
 		if err != nil {
-			log.Printf("MAP TASK FAILED RENAME TEMP FILE")
+			//log.Printf("MAP TASK FAILED RENAME TEMP FILE")
 			return false
 		}
 	}
@@ -147,7 +147,7 @@ func executeReduceTask(jobId int, nMapTasks int, reducef func(string, []string) 
 		
 		file, err := os.Open(mapOutputFileName)
 		if err != nil {
-			log.Printf("REDUCE TASK FAILED READ mapOutputFile")
+			//log.Printf("REDUCE TASK FAILED READ mapOutputFile")
 			return false
 		}
 		
@@ -171,7 +171,7 @@ func executeReduceTask(jobId int, nMapTasks int, reducef func(string, []string) 
 	oname := fmt.Sprintf("mr-out-%d", jobId)
 	tmpfile, err := os.CreateTemp("", "TEMP-MR-OUTFILE*")
 	if err != nil {
-		log.Printf("REDUCE TEMP FILE CREATION FAILED")
+		//log.Printf("REDUCE TEMP FILE CREATION FAILED")
 		return false
 	}
 	i := 0
@@ -192,7 +192,7 @@ func executeReduceTask(jobId int, nMapTasks int, reducef func(string, []string) 
 	tmpfile.Close()
 	err = os.Rename(tmpfile.Name(), oname)
 	if err != nil {
-		log.Printf("FAILED RENAMING")
+		//log.Printf("FAILED RENAMING")
 		return false
 	}
 

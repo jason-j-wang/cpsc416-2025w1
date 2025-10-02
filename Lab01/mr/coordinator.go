@@ -98,9 +98,6 @@ func (c *Coordinator) HeartbeatRPC(args *WorkerArgs, reply *GenericReply) error 
 // Iterate through the jobs array and assigns the first one that is either:
 // - status is "incomplete"
 // - status is "in progress" and jobStartTime is more than 10 seconds ago
-
-// side note: if we stick to this assigning logic, idk what use the worker status would be used for.
-// not even sure if what the heartbeat monitor is used for either, but it's there anyways
 func (c *Coordinator) Task(args *WorkerArgs, reply *TaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
