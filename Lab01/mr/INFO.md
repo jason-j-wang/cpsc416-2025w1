@@ -1,9 +1,11 @@
 ## Group Members
 
 Jason Wang
+Jaden Hums
 
 ## Work Distribution
--   MR Independent RPCs - Jason
+-   MR Independent RPCs - Jason, Jaden
+-   Worker RPC's to coodinator - Jaden
 -   Map Phase - Jaden, Devin, Jason
 -   Reduce Phase - Devin
 
