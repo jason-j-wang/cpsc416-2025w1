@@ -377,7 +377,7 @@ func (rf *Raft) sendHeartbeat() {
 		}
 		rf.mu.Unlock()
 
-		time.Sleep(time.Duration(300) * time.Millisecond)
+		time.Sleep(time.Duration(200) * time.Millisecond)
 	}
 }
 
@@ -435,6 +435,9 @@ func (rf *Raft) ticker() {
 			rf.votedFor = rf.me
 			rf.voteCount = 1
 			rf.mu.Unlock()
+
+			// For optimization: update lastHeartbeat so server won't instantly start another election
+			rf.lastHeartbeat = time.Now().UnixMilli()
 			debug(fmt.Sprintf("Starting election for term %d", rf.currentTerm), rf)
 
 			for serverId := range rf.peers {
