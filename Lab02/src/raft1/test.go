@@ -11,7 +11,7 @@ import (
 
 	"cpsc416-2025w1/labrpc"
 	"cpsc416-2025w1/raftapi"
-	"cpsc416-2025w1/tester1"
+	tester "cpsc416-2025w1/tester1"
 )
 
 type Test struct {
