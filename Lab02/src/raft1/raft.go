@@ -377,8 +377,7 @@ func (rf *Raft) sendHeartbeat() {
 		}
 		rf.mu.Unlock()
 
-		// Sleep for 100ms
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		time.Sleep(time.Duration(300) * time.Millisecond)
 	}
 }
 
