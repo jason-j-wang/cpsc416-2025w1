@@ -7,7 +7,7 @@ Devin Chikhlia
 ## Work Distribution
 -   Part A: Jason, Jaden
 -   Part B: Jaden
--   Part C:
+-   Part C: Jason
 -   Part D:
 
 ## AI Usage

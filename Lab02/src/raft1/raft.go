@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"cpsc416-2025w1/labgob"
 	"cpsc416-2025w1/labrpc"
 	"cpsc416-2025w1/raftapi"
 	tester "cpsc416-2025w1/tester1"
@@ -92,6 +94,16 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -112,6 +124,22 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var votedFor int
+	var currentTerm int
+	var persistLog []LogEntry
+
+	if d.Decode(&votedFor) != nil || 
+		d.Decode(&currentTerm) != nil ||
+		d.Decode(&persistLog) != nil {
+			log.Fatal("Failed to decode persisted state")
+	} else {
+	  rf.votedFor = votedFor
+	  rf.currentTerm = currentTerm
+	  rf.log = persistLog
+	}
 }
 
 // how many bytes in Raft's persisted log?
@@ -181,6 +209,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.state = RaftStateFollower
+		rf.persist()
 		debug("converted to follower (appendentries)", rf)
 	}
 
@@ -224,10 +253,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// Delete conflicting entry and all that follow
 				rf.log = rf.log[:logIndex]
 				rf.log = append(rf.log, args.Entries[i:]...)
+				rf.persist()
 				break
 			}
 		} else {
 			rf.log = append(rf.log, args.Entries[i:]...)
+			rf.persist()
 			break
 		}
 	}
@@ -255,6 +286,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.state = RaftStateFollower
+		rf.persist()
 		debug("converted to follower (requestvote)", rf)
 	}
 
@@ -278,6 +310,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.votedFor = args.CandidateId
 	rf.lastHeartbeat = time.Now().UnixMilli()
 	reply.VoteGranted = true
+	rf.persist()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -335,6 +368,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := len(rf.log)
 	term := rf.currentTerm
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
+	rf.persist()
 
 	go rf.sendAppendEntriesToAll()
 
@@ -378,6 +412,7 @@ func (rf *Raft) sendAppendEntriesHelper(serverId int, args *AppendEntriesArgs, r
 		rf.currentTerm = reply.Term
 		rf.votedFor = -1
 		rf.state = RaftStateFollower
+		rf.persist()
 		debug("converted to follower (heartbeat reply)", rf)
 		return
 	}
@@ -503,6 +538,7 @@ func (rf *Raft) voteRequestHelper(serverId int, args *RequestVoteArgs, reply *Re
 		rf.currentTerm = reply.Term
 		rf.votedFor = -1
 		rf.state = RaftStateFollower
+		rf.persist()
 		debug("converted to follower (vote reply)", rf)
 		return
 	}
@@ -541,6 +577,7 @@ func (rf *Raft) ticker() {
 			rf.votedFor = rf.me
 			rf.voteCount = 1
 			rf.lastHeartbeat = time.Now().UnixMilli()
+			rf.persist()
 
 			args := RequestVoteArgs{
 				Term:        rf.currentTerm,
