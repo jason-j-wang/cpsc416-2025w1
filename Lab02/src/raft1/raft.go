@@ -360,7 +360,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) sendHeartbeatHelper(serverId int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) sendAppendEntriesHelper(serverId int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.sendAppendEntries(serverId, args, reply)
 
 	if !ok {
@@ -445,7 +445,7 @@ func (rf *Raft) sendAppendEntriesToAll() {
 		}
 
 		reply := AppendEntriesReply{}
-		go rf.sendHeartbeatHelper(serverId, &args, &reply)
+		go rf.sendAppendEntriesHelper(serverId, &args, &reply)
 	}
 	rf.mu.Unlock()
 }
