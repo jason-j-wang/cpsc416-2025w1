@@ -77,6 +77,24 @@ type LogEntry struct {
 	Command interface{}
 }
 
+// helper to convert between global log index and rf.log slice indices
+func (rf *Raft) sliceIndex(globalIdx int) int {
+	return globalIdx - rf.lastIncludedIndex
+}
+
+// last global log index
+func (rf *Raft) lastLogIndex() int {
+	return rf.lastIncludedIndex + len(rf.log) - 1
+}
+
+// last log term (global)
+func (rf *Raft) lastLogTerm() int {
+	if len(rf.log) > 1 {
+		return rf.log[len(rf.log)-1].Term
+	}
+	return rf.lastIncludedTerm
+}
+
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -159,37 +177,49 @@ func (rf *Raft) PersistBytes() int {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// TODO discard raft log entries up to index after implementing proper log starting at X
-	//  This means the incoming snapshot is older than the saved snapshot so we ignore it
-	if (index <= rf.lastIncludedIndex) {
+
+	// Ignore old snapshots
+	if index <= rf.lastIncludedIndex {
 		return
 	}
+
+	// pos refers to the index in rf.log corresponding to the global index (ie it translates from global index to local)
+	pos := rf.sliceIndex(index)
 	
 
-	// Here we need to trim the log carefully because of the indexes.
-	// The first entry in the log, corresponds to the entry of index lastIncludedIndex + 1.
-	// This means the incoming index we need to adjust for this offset
-	// The math should go as follows:
-	// We assume the new log continue with 0 based indexing which means we should create a new log and have a first nil entry
-	// Then say for ex index is 10, and lastIncludedIndex is 5, that means we have entries from 6 to 10 inclusive that we want to delete from the log
-	// and keep everything index 11 and onwards say we have a log of length 18 currently that means we need entries 11-18 to be copied over
+	// Gets term of the entry being included in the snapshot (do this before trimming)
+	var cutTerm int
+	if pos < len(rf.log) {
+		cutTerm = rf.log[pos].Term
+	} else {
+		// This shouldnt really happen i think, cause that means we are snapshotting beyond our log, which shouldnt be possible
+		// I believe this is called from the service layer which would have to know the log entry so i dont think this should be possible
+		// but just in case we handle it
+		cutTerm = rf.lastIncludedTerm
+	}
+
 
 	newLog := make([]LogEntry, 1)
-	newLog[0] = LogEntry{Term: 0, Command: nil} // dummy entry
-	var cutTerm int
-	if index+1-rf.lastIncludedIndex < len(rf.log) {
-		cutTerm = rf.log[index-rf.lastIncludedIndex].Term
-		newLog = append(newLog, rf.log[index+1-rf.lastIncludedIndex:]...)
-		
+	newLog[0] = LogEntry{Term: 0, Command: nil}
+	if pos+1 < len(rf.log) {
+		newLog = append(newLog, rf.log[pos+1:]...)
 	}
 	rf.log = newLog
 
 	rf.lastIncludedIndex = index
 	rf.lastIncludedTerm = cutTerm
 	rf.snapshot = snapshot
+
+	// Ensure commitIndex/lastApplied don't lag behind snapshot
+	if rf.commitIndex < index {
+		rf.commitIndex = index
+	}
+	if rf.lastApplied < index {
+		rf.lastApplied = index
+	}
+
 	rf.persist()
 }
 
@@ -253,40 +283,66 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		debug("no longer a leader (appendentries)", rf)
 	}
 
-	// Reply false if log doesn't contain an entry at prevLogIndex
-	if args.PrevLogIndex >= len(rf.log) {
-		reply.XLen = len(rf.log)
+	// If PrevLogIndex is before our snapshot, leader should send snapshot instead
+	if args.PrevLogIndex < rf.lastIncludedIndex {
+		reply.XLen = rf.lastIncludedIndex
 		reply.XTerm = -1
 		reply.XIndex = -1
 		return
 	}
 
-	// Reply false if log entry at prevLogIndex has wrong term
-	if args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.XTerm = rf.log[args.PrevLogIndex].Term
-		reply.XIndex = args.PrevLogIndex
-		// Find first index with XTerm
-		for i := args.PrevLogIndex; i >= 1; i-- {
-			if rf.log[i].Term != reply.XTerm {
-				reply.XIndex = i + 1
-				break
-			}
-			if i == 1 {
-				reply.XIndex = 1
-			}
-		}
-		reply.XLen = len(rf.log)
+	globalLast := rf.lastLogIndex()
+	// if PrevLogIndex is beyond our last index that means we are missing entries so we reply starting at the global last +1
+	if args.PrevLogIndex > globalLast {
+		reply.XLen = globalLast + 1
 		return
 	}
 
-	// If an existing entry conflicts with a new one, delete it and all following
+	// check PrevLogTerm (handle PrevLogIndex == lastIncludedIndex)
+	if args.PrevLogIndex == rf.lastIncludedIndex {
+		// Reply false if the prevLogTerm and our recorded last term are not matching
+		if args.PrevLogTerm != rf.lastIncludedTerm {
+			reply.XTerm = rf.lastIncludedTerm
+			reply.XIndex = rf.lastIncludedIndex
+			reply.XLen = globalLast + 1
+			return
+		}
+	} else {
+		pos := rf.sliceIndex(args.PrevLogIndex)
+		// That means Pos is out of bounds of our local log so we reject as we need the data starting from Globallast +1
+		if pos < 0 || pos >= len(rf.log) {
+			reply.XLen = globalLast + 1
+			return
+		}
+		if rf.log[pos].Term != args.PrevLogTerm {
+			reply.XTerm = rf.log[pos].Term
+			// find first index with XTerm
+			i := args.PrevLogIndex
+			for i >= rf.lastIncludedIndex+1 {
+				if rf.log[rf.sliceIndex(i)].Term != reply.XTerm {
+					reply.XIndex = i + 1
+					break
+				}
+				if i == rf.lastIncludedIndex+1 {
+					reply.XIndex = rf.lastIncludedIndex + 1
+					break
+				}
+				i--
+			}
+			reply.XLen = globalLast + 1
+			return
+		}
+	}
+
+	// insert entries starting at PrevLogIndex + 1
 	insertIndex := args.PrevLogIndex + 1
 	for i, entry := range args.Entries {
 		logIndex := insertIndex + i
-		if logIndex < len(rf.log) {
-			if rf.log[logIndex].Term != entry.Term {
+		pos := rf.sliceIndex(logIndex)
+		if pos < len(rf.log) {
+			if rf.log[pos].Term != entry.Term {
 				// Delete conflicting entry and all that follow
-				rf.log = rf.log[:logIndex]
+				rf.log = rf.log[:pos]
 				rf.log = append(rf.log, args.Entries[i:]...)
 				rf.persist()
 				break
@@ -299,7 +355,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
+		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(rf.lastLogIndex())))
 		rf.applyCond.Signal()
 	}
 
@@ -329,11 +385,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	lastLogIndex := len(rf.log) - 1
-	lastLogTerm := 0
-	if lastLogIndex >= 1 {
-		lastLogTerm = rf.log[lastLogIndex].Term
-	}
+	lastLogIndex := rf.lastLogIndex()
+	lastLogTerm := rf.lastLogTerm()
 
 	isUpToDate := args.LastLogTerm > lastLogTerm ||
 		(args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
@@ -400,7 +453,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, rf.currentTerm, false
 	}
 
-	index := len(rf.log)
+	index := rf.lastLogIndex() + 1
 	term := rf.currentTerm
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command})
 	rf.persist()
@@ -465,9 +518,10 @@ func (rf *Raft) sendAppendEntriesHelper(serverId int, args *AppendEntriesArgs, r
 			rf.nextIndex[serverId] = reply.XLen
 		} else {
 			foundTerm := false
-			for i := len(rf.log) - 1; i >= 1; i-- {
-				if rf.log[i].Term == reply.XTerm {
-					rf.nextIndex[serverId] = i + 1
+			// search global indices backwards
+			for gi := rf.lastLogIndex(); gi >= rf.lastIncludedIndex+1; gi-- {
+				if rf.log[rf.sliceIndex(gi)].Term == reply.XTerm {
+					rf.nextIndex[serverId] = gi + 1
 					foundTerm = true
 					break
 				}
@@ -477,9 +531,8 @@ func (rf *Raft) sendAppendEntriesHelper(serverId int, args *AppendEntriesArgs, r
 			}
 		}
 
-		// Ensure nextIndex doesn't go below 1 (since index 0 is dummy)
-		if rf.nextIndex[serverId] < 1 {
-			rf.nextIndex[serverId] = 1
+		if rf.nextIndex[serverId] < rf.lastIncludedIndex+1 {
+			rf.nextIndex[serverId] = rf.lastIncludedIndex + 1
 		}
 	}
 }
@@ -505,13 +558,21 @@ func (rf *Raft) sendAppendEntriesToAll() {
 		nextIdx := rf.nextIndex[serverId]
 		args.PrevLogIndex = nextIdx - 1
 
-		if args.PrevLogIndex >= 0 && args.PrevLogIndex < len(rf.log) {
-			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		if args.PrevLogIndex == rf.lastIncludedIndex {
+			args.PrevLogTerm = rf.lastIncludedTerm
+		} else if args.PrevLogIndex > rf.lastIncludedIndex {
+			pos := rf.sliceIndex(args.PrevLogIndex)
+			if pos >= 0 && pos < len(rf.log) {
+				args.PrevLogTerm = rf.log[pos].Term
+			}
 		}
 
-		if nextIdx < len(rf.log) {
-			args.Entries = make([]LogEntry, len(rf.log)-nextIdx)
-			copy(args.Entries, rf.log[nextIdx:])
+		if nextIdx <= rf.lastLogIndex() {
+			start := rf.sliceIndex(nextIdx)
+			if start >= 0 && start < len(rf.log) {
+				args.Entries = make([]LogEntry, len(rf.log)-start)
+				copy(args.Entries, rf.log[start:])
+			}
 		}
 
 		reply := AppendEntriesReply{}
@@ -521,8 +582,11 @@ func (rf *Raft) sendAppendEntriesToAll() {
 }
 
 func (rf *Raft) tryAdvanceCommitIndex() {
-	for n := len(rf.log) - 1; n > rf.commitIndex; n-- {
-		if n < 1 || rf.log[n].Term != rf.currentTerm {
+	for n := rf.lastLogIndex(); n > rf.commitIndex; n-- {
+		if n < rf.lastIncludedIndex+1 {
+			continue
+		}
+		if rf.log[rf.sliceIndex(n)].Term != rf.currentTerm {
 			continue
 		}
 
@@ -586,10 +650,10 @@ func (rf *Raft) voteRequestHelper(serverId int, args *RequestVoteArgs, reply *Re
 			rf.state = RaftStateLeader
 
 			for i := range rf.peers {
-				rf.nextIndex[i] = len(rf.log)
-				rf.matchIndex[i] = 0
+				rf.nextIndex[i] = rf.lastLogIndex() + 1
+				rf.matchIndex[i] = rf.lastIncludedIndex
 			}
-			rf.matchIndex[rf.me] = len(rf.log) - 1
+			rf.matchIndex[rf.me] = rf.lastLogIndex()
 
 			go rf.sendAppendEntriesToAll()
 		}
@@ -619,10 +683,10 @@ func (rf *Raft) ticker() {
 				CandidateId: rf.me,
 			}
 
-			lastLogIndex := len(rf.log) - 1
-			if lastLogIndex >= 1 {
+			lastLogIndex := rf.lastLogIndex()
+			if lastLogIndex >= rf.lastIncludedIndex+1 {
 				args.LastLogIndex = lastLogIndex
-				args.LastLogTerm = rf.log[lastLogIndex].Term
+				args.LastLogTerm = rf.lastLogTerm()
 			}
 
 			debug(fmt.Sprintf("Starting election for term %d", rf.currentTerm), rf)
@@ -659,7 +723,7 @@ func (rf *Raft) applier() {
 		entries := make([]LogEntry, 0)
 		startIndex := rf.lastApplied + 1
 		for i := startIndex; i <= rf.commitIndex; i++ {
-			entries = append(entries, rf.log[i])
+			entries = append(entries, rf.log[rf.sliceIndex(i)])
 		}
 		rf.lastApplied = rf.commitIndex
 		rf.mu.Unlock()
@@ -694,10 +758,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
+	rf.readPersist(persister.ReadRaftState())
+
 	rf.nextIndex = make([]int, rf.numServers)
 	rf.matchIndex = make([]int, rf.numServers)
 	for i := range rf.matchIndex {
-		rf.matchIndex[i] = 0
+		rf.matchIndex[i] = rf.lastIncludedIndex
 	}
 
 	rf.lastHeartbeat = time.Now().UnixMilli()
