@@ -48,7 +48,14 @@ type Raft struct {
 	state       RaftState
 	currentTerm int
 	votedFor    int
+	// Now stores the log entries starting at lastIncludedIndex + 1, older logs we do not care as they should be stored in the snapshot data
 	log         []LogEntry
+
+
+	lastIncludedIndex  int // highest log index included in the snapshot.
+	lastIncludedTerm   int // term of that log entry.
+	snapshot           []byte // current snapshot
+
 
 	// Volatile state on all servers
 	commitIndex int
@@ -92,9 +99,15 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
-
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+	// TODO add snapshot data to be saved here
+	if rf.snapshot != nil {
+		rf.persister.Save(raftstate, rf.snapshot)
+	} else {
+		rf.persister.Save(raftstate, nil)
+	}
 }
 
 // restore previously persisted state.
@@ -107,15 +120,30 @@ func (rf *Raft) readPersist(data []byte) {
 	var votedFor int
 	var currentTerm int
 	var persistLog []LogEntry
+	var lastIncludedIndex int
+	var lastIncludedTerm int
 
-	if d.Decode(&votedFor) != nil || 
+
+	if d.Decode(&votedFor) != nil ||
 		d.Decode(&currentTerm) != nil ||
-		d.Decode(&persistLog) != nil {
-			log.Fatal("Failed to decode persisted state")
+		d.Decode(&persistLog) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil {
+		log.Fatal("Failed to decode persisted state")
+	}
+
+	// restore decoded raft state
+	rf.votedFor = votedFor
+	rf.currentTerm = currentTerm
+	rf.log = persistLog
+	rf.lastIncludedIndex = lastIncludedIndex
+	rf.lastIncludedTerm = lastIncludedTerm
+
+	snap := rf.persister.ReadSnapshot()
+	if snap != nil {
+		rf.snapshot = snap
 	} else {
-	  rf.votedFor = votedFor
-	  rf.currentTerm = currentTerm
-	  rf.log = persistLog
+		rf.snapshot = nil
 	}
 }
 
@@ -132,7 +160,37 @@ func (rf *Raft) PersistBytes() int {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// TODO discard raft log entries up to index after implementing proper log starting at X
+	//  This means the incoming snapshot is older than the saved snapshot so we ignore it
+	if (index <= rf.lastIncludedIndex) {
+		return
+	}
+	
 
+	// Here we need to trim the log carefully because of the indexes.
+	// The first entry in the log, corresponds to the entry of index lastIncludedIndex + 1.
+	// This means the incoming index we need to adjust for this offset
+	// The math should go as follows:
+	// We assume the new log continue with 0 based indexing which means we should create a new log and have a first nil entry
+	// Then say for ex index is 10, and lastIncludedIndex is 5, that means we have entries from 6 to 10 inclusive that we want to delete from the log
+	// and keep everything index 11 and onwards say we have a log of length 18 currently that means we need entries 11-18 to be copied over
+
+	newLog := make([]LogEntry, 1)
+	newLog[0] = LogEntry{Term: 0, Command: nil} // dummy entry
+	var cutTerm int
+	if index+1-rf.lastIncludedIndex < len(rf.log) {
+		cutTerm = rf.log[index-rf.lastIncludedIndex].Term
+		newLog = append(newLog, rf.log[index+1-rf.lastIncludedIndex:]...)
+		
+	}
+	rf.log = newLog
+
+	rf.lastIncludedIndex = index
+	rf.lastIncludedTerm = cutTerm
+	rf.snapshot = snapshot
+	rf.persist()
 }
 
 type RequestVoteArgs struct {
