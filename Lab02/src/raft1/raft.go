@@ -120,7 +120,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.lastIncludedIndex)
 	e.Encode(rf.lastIncludedTerm)
 	raftstate := w.Bytes()
-	// TODO add snapshot data to be saved here
 	if rf.snapshot != nil {
 		rf.persister.Save(raftstate, rf.snapshot)
 	} else {
@@ -252,6 +251,18 @@ type AppendEntriesReply struct {
 	XLen    int // Log length
 }
 
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
@@ -360,6 +371,81 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	reply.Success = true
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+    ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+    return ok
+}
+
+// InstallSnapshot RPC handler. Leader sends this when a follower is too far
+// behind and the leader has a snapshot covering the follower's missing entries.
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+
+	reply.Term = rf.currentTerm
+
+	if args.Term < rf.currentTerm {
+		rf.mu.Unlock()
+		return
+	}
+
+	// If leader's term is newer, convert to follower
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.state = RaftStateFollower
+		rf.persist()
+	}
+
+	// If the snapshot is not newer than what we already have, ignore it 
+	if args.LastIncludedIndex <= rf.lastIncludedIndex {
+		reply.Term = rf.currentTerm
+		rf.mu.Unlock()
+		return
+	}
+
+	// Install the snapshot: update persisted state and trim log
+	rf.snapshot = make([]byte, len(args.Data))
+	copy(rf.snapshot, args.Data)
+	rf.lastIncludedIndex = args.LastIncludedIndex
+	rf.lastIncludedTerm = args.LastIncludedTerm
+
+	// Trim rf.log so that rf.log[0] is the dummy entry and entries start at lastIncludedIndex+1
+	newLog := make([]LogEntry, 1)
+	newLog[0] = LogEntry{Term: 0, Command: nil}
+	// compute position of lastIncludedIndex in rf.log slice
+	pos := rf.sliceIndex(rf.lastIncludedIndex)
+	if pos+1 < len(rf.log) {
+		newLog = append(newLog, rf.log[pos+1:]...)
+	}
+	rf.log = newLog
+
+	// Advance commitIndex/lastApplied to at least the snapshot index
+	if rf.commitIndex < rf.lastIncludedIndex {
+		rf.commitIndex = rf.lastIncludedIndex
+	}
+	if rf.lastApplied < rf.lastIncludedIndex {
+		rf.lastApplied = rf.lastIncludedIndex
+	}
+
+	rf.persist()
+
+	// Capture snapshot info for apply without holding lock
+	snap := make([]byte, len(rf.snapshot))
+	copy(snap, rf.snapshot)
+	snapTerm := rf.lastIncludedTerm
+	snapIndex := rf.lastIncludedIndex
+	rf.mu.Unlock()
+
+	// Deliver snapshot to state machine via applyCh
+	msg := raftapi.ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      snap,
+		SnapshotTerm:  snapTerm,
+		SnapshotIndex: snapIndex,
+	}
+	rf.applyCh <- msg
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -768,8 +854,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.lastHeartbeat = time.Now().UnixMilli()
 	rf.applyCond = sync.NewCond(&rf.mu)
-
-	rf.readPersist(persister.ReadRaftState())
 
 	go rf.ticker()
 	go rf.sendHeartbeat()
