@@ -286,7 +286,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = -1
 		rf.state = RaftStateFollower
 		rf.persist()
-		debug("converted to follower (appendentries)", rf)
+		debug("converted to follower (append entries)", rf)
 	}
 
 	if rf.state != RaftStateFollower {
