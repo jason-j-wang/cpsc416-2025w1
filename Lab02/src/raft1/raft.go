@@ -201,7 +201,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 
 	newLog := make([]LogEntry, 1)
-	newLog[0] = LogEntry{Term: 0, Command: nil}
+	newLog[0] = LogEntry{Term: cutTerm, Command: nil}
 	if pos+1 < len(rf.log) {
 		newLog = append(newLog, rf.log[pos+1:]...)
 	}
@@ -286,7 +286,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = -1
 		rf.state = RaftStateFollower
 		rf.persist()
-		debug("converted to follower (append entries)", rf)
+		debug("converted to follower (appendentries)", rf)
 	}
 
 	if rf.state != RaftStateFollower {
@@ -413,7 +413,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	// Trim rf.log so that rf.log[0] is the dummy entry and entries start at lastIncludedIndex+1
 	newLog := make([]LogEntry, 1)
-	newLog[0] = LogEntry{Term: 0, Command: nil}
+	newLog[0] = LogEntry{Term: rf.lastIncludedTerm, Command: nil}
 	// compute position of lastIncludedIndex in rf.log slice
 	pos := rf.sliceIndex(rf.lastIncludedIndex)
 	if pos+1 < len(rf.log) {
@@ -623,6 +623,30 @@ func (rf *Raft) sendAppendEntriesHelper(serverId int, args *AppendEntriesArgs, r
 	}
 }
 
+func (rf *Raft) sendInstallSnapshotHelper(serverId int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	ok := rf.sendInstallSnapshot(serverId, args, reply)
+
+	if !ok {
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Turn to follower if the term from the response is newer
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = reply.Term
+		rf.votedFor = -1
+		rf.state = RaftStateFollower
+		rf.persist()
+		return
+	}
+
+	// After successful snapshot install, advance follower’s indices
+	rf.nextIndex[serverId] = rf.lastIncludedIndex + 1
+	rf.matchIndex[serverId] = rf.lastIncludedIndex
+}
+
 func (rf *Raft) sendAppendEntriesToAll() {
 	rf.mu.Lock()
 	if rf.state != RaftStateLeader {
@@ -643,6 +667,21 @@ func (rf *Raft) sendAppendEntriesToAll() {
 
 		nextIdx := rf.nextIndex[serverId]
 		args.PrevLogIndex = nextIdx - 1
+
+		// Check if a follower is too far behind and needs a snapshot instead of regular entries
+		if nextIdx <= rf.lastIncludedIndex {
+			args := InstallSnapshotArgs{
+				Term:              rf.currentTerm,
+				LeaderId:          rf.me,
+				LastIncludedIndex: rf.lastIncludedIndex,
+				LastIncludedTerm:  rf.lastIncludedTerm,
+				Data:              rf.snapshot,
+			}
+			reply := InstallSnapshotReply{}
+			go rf.sendInstallSnapshotHelper(serverId, &args, &reply)
+
+			continue
+		}
 
 		if args.PrevLogIndex == rf.lastIncludedIndex {
 			args.PrevLogTerm = rf.lastIncludedTerm
@@ -843,6 +882,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log[0] = LogEntry{Term: 0, Command: nil}
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.lastIncludedIndex = 0
+	rf.lastIncludedTerm = 0
 
 	rf.readPersist(persister.ReadRaftState())
 
