@@ -378,12 +378,41 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
     return ok
 }
 
+func (rf *Raft) sendInstallSnapshotHelper(serverId int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+    ok := rf.sendInstallSnapshot(serverId, args, reply)
+    if !ok {
+        return
+    }
+
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+
+    if rf.state != RaftStateLeader || args.Term != rf.currentTerm {
+        return
+    }
+
+    if reply.Term > rf.currentTerm {
+        rf.currentTerm = reply.Term
+        rf.votedFor = -1
+        rf.state = RaftStateFollower
+        rf.persist()
+        return
+    }
+
+    // Update nextIndex and matchIndex after successful snapshot installation
+    rf.nextIndex[serverId] = args.LastIncludedIndex + 1
+    rf.matchIndex[serverId] = args.LastIncludedIndex
+}
+
 // InstallSnapshot RPC handler. Leader sends this when a follower is too far
 // behind and the leader has a snapshot covering the follower's missing entries.
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 
 	reply.Term = rf.currentTerm
+
+	// Update last heartbeat since we got a message from current leader
+	rf.lastHeartbeat = time.Now().UnixMilli()
 
 	if args.Term < rf.currentTerm {
 		rf.mu.Unlock()
@@ -398,54 +427,81 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.persist()
 	}
 
-	// If the snapshot is not newer than what we already have, ignore it 
+	if rf.state != RaftStateFollower {
+		rf.state = RaftStateFollower
+	}
+
+	// If the snapshot is older than or equal to what we have, ignore it
 	if args.LastIncludedIndex <= rf.lastIncludedIndex {
-		reply.Term = rf.currentTerm
 		rf.mu.Unlock()
 		return
 	}
 
-	// Install the snapshot: update persisted state and trim log
+	// Save current state before making changes
+	oldCommitIndex := rf.commitIndex
+	oldLastApplied := rf.lastApplied
+	oldSnapshot := rf.snapshot
+	oldLastIncludedIndex := rf.lastIncludedIndex
+	oldLastIncludedTerm := rf.lastIncludedTerm
+
+	// Create new log starting with dummy entry
+	newLog := make([]LogEntry, 1)
+	newLog[0] = LogEntry{Term: 0, Command: nil}
+
+	// Try to retain log entries after snapshot point
+	if args.LastIncludedIndex <= rf.lastLogIndex() {
+		pos := rf.sliceIndex(args.LastIncludedIndex)
+		if pos >= 0 && pos < len(rf.log) {
+			if rf.log[pos].Term == args.LastIncludedTerm {
+				newLog = append(newLog, rf.log[pos+1:]...)
+			}
+		}
+	}
+
+	// Update state
+	rf.log = newLog
 	rf.snapshot = make([]byte, len(args.Data))
 	copy(rf.snapshot, args.Data)
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
 
-	// Trim rf.log so that rf.log[0] is the dummy entry and entries start at lastIncludedIndex+1
-	newLog := make([]LogEntry, 1)
-	newLog[0] = LogEntry{Term: 0, Command: nil}
-	// compute position of lastIncludedIndex in rf.log slice
-	pos := rf.sliceIndex(rf.lastIncludedIndex)
-	if pos+1 < len(rf.log) {
-		newLog = append(newLog, rf.log[pos+1:]...)
+	// Update commit and apply indices
+	if rf.commitIndex < args.LastIncludedIndex {
+		rf.commitIndex = args.LastIncludedIndex
 	}
-	rf.log = newLog
-
-	// Advance commitIndex/lastApplied to at least the snapshot index
-	if rf.commitIndex < rf.lastIncludedIndex {
-		rf.commitIndex = rf.lastIncludedIndex
-	}
-	if rf.lastApplied < rf.lastIncludedIndex {
-		rf.lastApplied = rf.lastIncludedIndex
+	if rf.lastApplied < args.LastIncludedIndex {
+		rf.lastApplied = args.LastIncludedIndex
 	}
 
 	rf.persist()
 
-	// Capture snapshot info for apply without holding lock
-	snap := make([]byte, len(rf.snapshot))
-	copy(snap, rf.snapshot)
-	snapTerm := rf.lastIncludedTerm
-	snapIndex := rf.lastIncludedIndex
-	rf.mu.Unlock()
-
-	// Deliver snapshot to state machine via applyCh
+	// Prepare snapshot message
 	msg := raftapi.ApplyMsg{
 		SnapshotValid: true,
-		Snapshot:      snap,
-		SnapshotTerm:  snapTerm,
-		SnapshotIndex: snapIndex,
+		Snapshot:      make([]byte, len(args.Data)),
+		SnapshotTerm:  args.LastIncludedTerm,
+		SnapshotIndex: args.LastIncludedIndex,
 	}
-	rf.applyCh <- msg
+	copy(msg.Snapshot, args.Data)
+
+	// If something goes wrong while sending the snapshot,
+	// we need to roll back our state
+	select {
+	case rf.applyCh <- msg:
+		// Successfully sent the snapshot, we can release the lock
+		rf.mu.Unlock()
+	default:
+		// Channel blocked, roll back changes
+		rf.log = make([]LogEntry, 1)
+		rf.log[0] = LogEntry{Term: 0, Command: nil}
+		rf.snapshot = oldSnapshot
+		rf.lastIncludedIndex = oldLastIncludedIndex
+		rf.lastIncludedTerm = oldLastIncludedTerm
+		rf.commitIndex = oldCommitIndex
+		rf.lastApplied = oldLastApplied
+		rf.persist()
+		rf.mu.Unlock()
+	}
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -600,6 +656,21 @@ func (rf *Raft) sendAppendEntriesHelper(serverId int, args *AppendEntriesArgs, r
 
 		rf.tryAdvanceCommitIndex()
 	} else {
+		// Check if the follower needs a snapshot
+		if reply.XLen <= rf.lastIncludedIndex {
+			args := InstallSnapshotArgs{
+				Term:              rf.currentTerm,
+				LeaderId:          rf.me,
+				LastIncludedIndex: rf.lastIncludedIndex,
+				LastIncludedTerm:  rf.lastIncludedTerm,
+				Data:              make([]byte, len(rf.snapshot)),
+			}
+			copy(args.Data, rf.snapshot)
+			snapshotReply := InstallSnapshotReply{}
+			go rf.sendInstallSnapshotHelper(serverId, &args, &snapshotReply)
+			return
+		}
+
 		if reply.XTerm == -1 {
 			rf.nextIndex[serverId] = reply.XLen
 		} else {
@@ -635,13 +706,30 @@ func (rf *Raft) sendAppendEntriesToAll() {
 			continue
 		}
 
+		nextIdx := rf.nextIndex[serverId]
+		
+		// If the next index we need to send is less than or equal to our snapshot's last index
+		// we need to send the snapshot instead of log entries
+		if nextIdx <= rf.lastIncludedIndex {
+			args := InstallSnapshotArgs{
+				Term:              rf.currentTerm,
+				LeaderId:          rf.me,
+				LastIncludedIndex: rf.lastIncludedIndex,
+				LastIncludedTerm:  rf.lastIncludedTerm,
+				Data:              make([]byte, len(rf.snapshot)),
+			}
+			copy(args.Data, rf.snapshot)
+			reply := InstallSnapshotReply{}
+			go rf.sendInstallSnapshotHelper(serverId, &args, &reply)
+			continue
+		}
+
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
 			LeaderCommit: rf.commitIndex,
 		}
 
-		nextIdx := rf.nextIndex[serverId]
 		args.PrevLogIndex = nextIdx - 1
 
 		if args.PrevLogIndex == rf.lastIncludedIndex {
@@ -808,10 +896,25 @@ func (rf *Raft) applier() {
 
 		entries := make([]LogEntry, 0)
 		startIndex := rf.lastApplied + 1
-		for i := startIndex; i <= rf.commitIndex; i++ {
-			entries = append(entries, rf.log[rf.sliceIndex(i)])
+		
+		// Safety check: don't try to apply entries before snapshot
+		if startIndex <= rf.lastIncludedIndex {
+			startIndex = rf.lastIncludedIndex + 1
 		}
-		rf.lastApplied = rf.commitIndex
+
+		// Only proceed if there are entries to apply
+		if startIndex <= rf.commitIndex {
+			for i := startIndex; i <= rf.commitIndex; i++ {
+				// Only append entries that are after our snapshot
+				if i > rf.lastIncludedIndex {
+					sliceIdx := rf.sliceIndex(i)
+					if sliceIdx >= 0 && sliceIdx < len(rf.log) {
+						entries = append(entries, rf.log[sliceIdx])
+					}
+				}
+			}
+			rf.lastApplied = rf.commitIndex
+		}
 		rf.mu.Unlock()
 
 		// Send to applyCh outside lock
