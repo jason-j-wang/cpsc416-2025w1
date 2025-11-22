@@ -21,20 +21,37 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 type KVServer struct {
 	mu sync.Mutex
+	kvmap map[string]KVEntry
+}
 
-	// Your definitions here.
+type KVEntry struct {
+	value   string
+	version rpc.Tversion
 }
 
 func MakeKVServer() *KVServer {
 	kv := &KVServer{}
-	// Your code here.
+	kv.kvmap = make(map[string]KVEntry)
+	kv.mu = sync.Mutex{}
 	return kv
 }
 
 // Get returns the value and version for args.Key, if args.Key
 // exists. Otherwise, Get returns ErrNoKey.
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	value, ok := kv.kvmap[args.Key]
+
+	if !ok {
+		reply.Err = rpc.ErrNoKey
+		return
+	}
+
+	reply.Value = value.value
+	reply.Version = value.version
+	reply.Err = rpc.OK
 }
 
 // Update the value for a key if args.Version matches the version of
@@ -42,7 +59,30 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 // If the key doesn't exist, Put installs the value if the
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	currentValue, ok := kv.kvmap[args.Key]
+	
+	if !ok {
+		if args.Version != 0 {
+			reply.Err = rpc.ErrNoKey
+			return
+		}
+		// Key does not exist and version is 0, create new entry
+		kv.kvmap[args.Key] = KVEntry{value: args.Value, version: 1}
+		reply.Err = rpc.OK
+		return
+	}
+
+	// Version mismatch
+	if currentValue.version != args.Version {
+		reply.Err = rpc.ErrVersion
+		return
+	}
+
+	kv.kvmap[args.Key] = KVEntry{value: args.Value, version: currentValue.version + 1}
+	reply.Err = rpc.OK
 }
 
 // You can ignore Kill() for this lab
