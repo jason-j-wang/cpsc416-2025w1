@@ -38,6 +38,13 @@ func (lk *Lock) Acquire() {
 			if err == rpc.OK {
 				return
 			}
+			// On ErrMaybe, we need to check if we got the lock
+			if err == rpc.ErrMaybe {
+				value, _, err := lk.ck.Get(lk.key)
+				if err == rpc.OK && value == lk.clientId {
+					return
+				}
+			}
 			continue
 		}
 
@@ -45,6 +52,13 @@ func (lk *Lock) Acquire() {
 			err = lk.ck.Put(lk.key, lk.clientId, version)
 			if err == rpc.OK {
 				return
+			}
+			// On ErrMaybe, we need to check if we got the lock
+			if err == rpc.ErrMaybe {
+				value, _, err := lk.ck.Get(lk.key)
+				if err == rpc.OK && value == lk.clientId {
+					return
+				}
 			}
 		}
 	}
@@ -62,6 +76,16 @@ func (lk *Lock) Release() {
 			err = lk.ck.Put(lk.key, "", version)
 			if err == rpc.OK {
 				return
+			}
+			// On ErrMaybe, we need to check if we released the lock
+			if err == rpc.ErrMaybe {
+				value, _, err := lk.ck.Get(lk.key)
+				if err == rpc.OK && value == "" {
+					return
+				}
+				if err == rpc.ErrNoKey {
+					return
+				}
 			}
 		} else {
 			return
