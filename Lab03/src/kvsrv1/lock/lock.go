@@ -10,8 +10,9 @@ type Lock struct {
 	// the specific Clerk type of ck but promises that ck supports
 	// Put and Get.  The tester passes the clerk in when calling
 	// MakeLock().
-	ck kvtest.IKVClerk
-	// You may add code here
+	ck       kvtest.IKVClerk
+	key      string // key to identify the lock
+	clientId string // unique identifier for this client
 }
 
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
@@ -20,15 +21,74 @@ type Lock struct {
 // Use l as the key to store the "lock state" (you would have to decide
 // precisely what the lock state is).
 func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
-	lk := &Lock{ck: ck}
-	// You may add code here
+	lk := &Lock{
+		ck:       ck,
+		key:      l,
+		clientId: kvtest.RandValue(8),
+	}
 	return lk
 }
 
 func (lk *Lock) Acquire() {
-	// Your code here
+	for {
+		value, version, err := lk.ck.Get(lk.key)
+
+		if err == rpc.ErrNoKey {
+			err = lk.ck.Put(lk.key, lk.clientId, 0)
+			if err == rpc.OK {
+				return
+			}
+			// On ErrMaybe, we need to check if we got the lock
+			if err == rpc.ErrMaybe {
+				value, _, err := lk.ck.Get(lk.key)
+				if err == rpc.OK && value == lk.clientId {
+					return
+				}
+			}
+			continue
+		}
+
+		if value == "" {
+			err = lk.ck.Put(lk.key, lk.clientId, version)
+			if err == rpc.OK {
+				return
+			}
+			// On ErrMaybe, we need to check if we got the lock
+			if err == rpc.ErrMaybe {
+				value, _, err := lk.ck.Get(lk.key)
+				if err == rpc.OK && value == lk.clientId {
+					return
+				}
+			}
+		}
+	}
 }
 
 func (lk *Lock) Release() {
-	// Your code here
+	for {
+		value, version, err := lk.ck.Get(lk.key)
+
+		if err == rpc.ErrNoKey {
+			return
+		}
+
+		if value == lk.clientId {
+			err = lk.ck.Put(lk.key, "", version)
+			if err == rpc.OK {
+				return
+			}
+			// On ErrMaybe, we need to check if we released the lock
+			if err == rpc.ErrMaybe {
+				value, _, err := lk.ck.Get(lk.key)
+				if err == rpc.OK && value == "" {
+					return
+				}
+				if err == rpc.ErrNoKey {
+					return
+				}
+			}
+		} else {
+			return
+		}
+	}
 }

@@ -1,6 +1,8 @@
 package kvsrv
 
 import (
+	"time"
+
 	"cpsc416-2025w1/kvsrv1/rpc"
 	kvtest "cpsc416-2025w1/kvtest1"
 	tester "cpsc416-2025w1/tester1"
@@ -41,6 +43,9 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		if ok && reply.Err == rpc.ErrNoKey {
 			return "", 0, rpc.ErrNoKey
 		}
+
+		// Network failure, retry after a delay
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -70,7 +75,9 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 		ok := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
 
 		if !ok {
+			// Network failure - retry after delay
 			firstAttempt = false
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		
